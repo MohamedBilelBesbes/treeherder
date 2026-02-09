@@ -2,29 +2,26 @@ from abc import ABC, abstractmethod
 from django.db import transaction
 from django.conf import settings
 from django.db import models
-from alerts import get_alert_properties
+from treeherder.perf.alerts import get_alert_properties
 
 from treeherder.perf.models import PerformanceSignature
 
-class BaseDetector(ABC, models.Model):
+class BaseDetector(ABC):
     """
     A base class that other classes can inherit from.
     """
     
-    # Define these as model fields
-    min_back_window = models.IntegerField()
-    max_back_window = models.IntegerField()
-    fore_window = models.IntegerField()
-    alert_threshold = models.FloatField()
-    alpha_threshold = models.FloatField()
-    mag_check = models.BooleanField(default=False)
-    
-    class Meta:
-        abstract = True
-    
-    def __init__(self, *args, **kwargs):
+    def __init__(self, min_back_window, max_back_window, fore_window,
+                 alert_threshold, alpha_threshold, mag_check, 
+                 above_threshold_is_anomaly):
         """Initialize the base class."""
-        super().__init__(*args, **kwargs)
+        self.min_back_window = min_back_window
+        self.max_back_window = max_back_window
+        self.fore_window = fore_window
+        self.alert_threshold = alert_threshold
+        self.alpha_threshold = alpha_threshold
+        self.mag_check = mag_check
+        self.above_threshold_is_anomaly = above_threshold_is_anomaly
         
 
     def default_weights(self, i, n):
@@ -48,22 +45,26 @@ class BaseDetector(ABC, models.Model):
         """
         Abstract method that must be implemented by subclasses to calculate alpha (p-value or T-value).
         """
+        pass
 
-        # add additional historical data points next time if we
-        # haven't detected a likely regression
-        t = 0
-
-        if t > alpha_threshold:
-            last_seen_regression = 0
+    def check_threshold(self, alpha, alpha_threshold, above_threshold_is_anomaly):
+        """
+        Abstract method that must be implemented by subclasses to check threshold.
+        """
+        if above_threshold_is_anomaly:
+            return alpha <= alpha_threshold
         else:
-            last_seen_regression += 1
+            return alpha >= alpha_threshold
         
-        t_abs = abs(t)
-
-        return t_abs, last_seen_regression # MAKE CUSTOM FUNFCTION FOR EACH CLASS
-
-
-
+    def check_adjacent_points(self, entry_1, entry_2, above_threshold_is_anomaly):
+        """
+        Check if adjacent points meet the threshold condition.
+        """
+        if above_threshold_is_anomaly:
+            return entry_1.t > entry_2.t
+        else:
+            return entry_1.t < entry_2.t
+            
     def analyze(self, revision_data, weight_fn=None):
         """Returns the average and sample variance (s**2) of a list of floats.
 
@@ -100,10 +101,10 @@ class BaseDetector(ABC, models.Model):
 
         return {"avg": weighted_avg, "n": len(all_data), "variance": variance}
 
-
-    def check_magnitude_of_change(self, signature, alert_threshold, analyzed_series):
+    def check_magnitude_of_change(self, signature, analyzed_series, alert_threshold):
         with transaction.atomic():
-            for cur in len(analyzed_series[1:]):
+
+            for cur in range(len(analyzed_series[1:])):
                 curr_series = analyzed_series[cur]
                 if curr_series.change_detected:
                     prev_value = curr_series.historical_stats["avg"]
@@ -126,6 +127,7 @@ class BaseDetector(ABC, models.Model):
                         analyzed_series[cur].change_detected = False
         return analyzed_series
 
+
     def detect_changes(self, data, signature):
         min_back_window = signature.min_back_window
         if min_back_window is None:
@@ -141,6 +143,7 @@ class BaseDetector(ABC, models.Model):
             alert_threshold = self.alert_threshold
         alpha_threshold = self.alpha_threshold
         mag_check = self.mag_check
+        above_threshold_is_anomaly = self.above_threshold_is_anomaly
         
         data = sorted(data)
 
@@ -177,29 +180,33 @@ class BaseDetector(ABC, models.Model):
             di.historical_stats = self.analyze(jw)
             di.forward_stats = self.analyze(kw)
 
-            di.t, last_seen_regression = self.calc_alpha(jw, kw, alpha_threshold, last_seen_regression, self.linear_weights)
+            di.t, last_seen_regression = self.calc_alpha(jw, kw, alpha_threshold, last_seen_regression)
 
         # Now that the t-test scores are calculated, go back through the data to
         # find where changes most likely happened.
         for i in range(1, len(data)):
             di = data[i]
-
             # if we don't have enough data yet, skip for now (until more comes
             # in)
             if di.amount_prev_data < min_back_window or di.amount_next_data < fore_window:
                 continue
 
-            if di.t <= alpha_threshold:
+            if self.check_threshold(di.t, alpha_threshold, above_threshold_is_anomaly):
                 continue
 
             # Check the adjacent points
             prev = data[i - 1]
-            if prev.t > di.t:
+            next = data[i + 1] if (i + 1) < len(data) else None
+            if self.check_adjacent_points(prev, di, above_threshold_is_anomaly):
+                continue
+            if prev.t < di.t:
                 continue
             # next may or may not exist if it's the last in the series
             if (i + 1) < len(data):
                 next = data[i + 1]
-                if next.t > di.t:
+                if self.check_adjacent_points(next, di, above_threshold_is_anomaly):
+                    continue
+                if next.t < di.t:
                     continue
 
             # This datapoint has a t value higher than the threshold and higher

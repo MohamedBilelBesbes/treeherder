@@ -188,7 +188,7 @@ def generate_new_alerts_in_series(signature):
                 t_value = cur.t
                 if t_value == float("inf"):
                     t_value = 1000
-
+                    
                 alert, _ = PerformanceAlert.objects.update_or_create(
                     summary=summary,
                     series_signature=signature,

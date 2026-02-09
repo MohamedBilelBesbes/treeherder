@@ -1,22 +1,24 @@
-import BaseDetector
+from treeherder.perf.methods.BaseDetector import BaseDetector
 from scipy import stats
 
-class MannWhitneyDetector(BaseDetector):
+class MannWhitneyUDetector(BaseDetector):
     """
     Detector using Mann-Whitney U test (non-parametric).
     """
     
     def __init__(self, min_back_window=12, max_back_window=24, fore_window=12,
-                 alert_threshold=2.0, alpha_threshold=0.05, mag_check=False):
-        self.min_back_window = min_back_window
-        self.max_back_window = max_back_window
-        self.fore_window = fore_window
-        self.alert_threshold = alert_threshold
-        self.alpha_threshold = alpha_threshold
-        self.mag_check = mag_check
-        super().__init__()
+                 alert_threshold=2.0, alpha_threshold=0.05, mag_check=False, above_threshold_is_anomaly=False):
+        super().__init__(
+            min_back_window=min_back_window,
+            max_back_window=max_back_window,
+            fore_window=fore_window,
+            alert_threshold=alert_threshold,
+            alpha_threshold=alpha_threshold,
+            mag_check=mag_check,
+            above_threshold_is_anomaly=above_threshold_is_anomaly
+        )
     
-    def calc_alpha(self, jw, kw, alpha_threshold, last_seen_regression, weight_fn):
+    def calc_alpha(self, jw, kw, alpha_threshold, last_seen_regression):
         """
         Calculate Mann-Whitney U test statistic and p-value.
         """

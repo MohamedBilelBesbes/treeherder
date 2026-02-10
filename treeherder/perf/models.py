@@ -823,10 +823,24 @@ class RevisionDatumTest:
         self.replicates = list(replicates or [])
 
         # alpha
-        self.alpha = dict()
+        self.alpha = {
+            "ks": float("inf"),
+            "cvm": float("inf"),
+            "mwu": float("inf"),
+            "studenttmag": -float("inf"),
+            "levene": float("inf"),
+            "welch": float("inf"),
+        }
 
         # Whether a perf regression or improvement was found
-        self.change_detected = dict()
+        self.change_detected = {
+            "ks": False,
+            "cvm": False,
+            "mwu": False,
+            "studenttmag": False,
+            "levene": False,
+            "welch": False,
+        }
 
     def __eq__(self, o):
         return self.push_timestamp == o.push_timestamp

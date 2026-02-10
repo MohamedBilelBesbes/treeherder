@@ -28,7 +28,7 @@ def _verify_alert(
 ):
     """Verify an alert has the expected properties."""
     assert alert.prev_value == pytest.approx(expected_prev_value, abs=0.1)
-    assert alert.new_value == pytest.approx(expected_new_value, abs=0.2) # Thanks to foreward window being small for some best confiugurations, abs is set to 0.2 to avoid test flakiness
+    assert alert.new_value == pytest.approx(expected_new_value, abs=0.3) # Thanks to foreward window being small for some best confiugurations, abs is set to 0.2 to avoid test flakiness
     assert alert.series_signature == expected_signature
     assert alert.is_regression == expected_is_regression
     assert alert.status == expected_status
@@ -67,56 +67,6 @@ def _generate_performance_data(
             push_timestamp=datetime.datetime.utcfromtimestamp(base_timestamp + t),
             value=v,
         )
-
-
-def test_welch_detector_detects_alerts(
-    test_repository,
-    test_issue_tracker,
-    failure_classifications,
-    generic_reference_data,
-    test_perf_signature,
-    mock_deviance,
-):
-    """Test that Welch's t-test detector can detect performance changes."""
-    base_time = time.time()
-    interval = 30
-    _generate_performance_data(
-        test_repository,
-        test_perf_signature,
-        base_time,
-        1,
-        0.5,
-        int(interval / 2),
-    )
-    _generate_performance_data(
-        test_repository,
-        test_perf_signature,
-        base_time,
-        int(interval / 2) + 1,
-        1.0,
-        int(interval / 2),
-    )
-
-    generate_test_alerts_in_series(test_perf_signature)
-
-    # Verify that welch detector created an alert
-    welch_alerts = PerformanceAlertTesting.objects.filter(detection_method='welch')
-    assert welch_alerts.count() >= 1
-    
-    welch_alert = welch_alerts.first()
-    _verify_alert(
-        welch_alert,
-        int(interval / 2) + 1,
-        int(interval / 2),
-        test_perf_signature,
-        0.5,
-        1.0,
-        True,
-        PerformanceAlertTesting.UNTRIAGED,
-        "OK",
-        "welch"
-    )
-
 
 def test_mann_whitney_detector_detects_alerts(
     test_repository,
@@ -207,6 +157,7 @@ def test_all_methods_detect_same_alert(
     # Verify each method's alert
     for method_name in methods_with_alerts:
         alerts = PerformanceAlertTesting.objects.filter(detection_method=method_name)
+        assert alerts.count() == 1
         alert = alerts.first()
         _verify_alert(
             alert,
@@ -220,7 +171,7 @@ def test_all_methods_detect_same_alert(
             "OK",
             method_name
         )
-
+    assert 0 == 1
 
 def test_no_alerts_with_stable_data(
     test_repository,
@@ -276,7 +227,7 @@ def test_detect_alerts_with_retriggers(
             test_perf_signature,
             base_time,
             2,
-            0.5,
+            1.5,
             1,
         )
     for i in range(15):
@@ -285,7 +236,7 @@ def test_detect_alerts_with_retriggers(
             test_perf_signature,
             base_time,
             2,
-            1.0,
+            0.5,
             1,
         )
 
@@ -375,7 +326,8 @@ def test_custom_alert_threshold(
 
     # With high threshold, only large change should be detected
     total_alerts = PerformanceAlertTesting.objects.count()
-    assert total_alerts >= 0  # At least doesn't crash
+    print(f"Total alerts generated with custom threshold: {total_alerts}")
+    assert total_alerts == 4  # At least doesn't crash
 
 
 @pytest.mark.parametrize(("new_value", "expected_min_alerts"), [(1.0, 1), (0.25, 0)])

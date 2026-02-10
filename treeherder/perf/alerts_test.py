@@ -17,6 +17,7 @@ from treeherder.perf.models import (
     PerformanceAlertSummaryTesting,
     PerformanceDatum,
     PerformanceDatumReplicate,
+    RevisionDatumTest,
 )
 
 from treeherder.perf.methods import (
@@ -38,19 +39,28 @@ from treeherder.perf.alerts import send_alert_emails, geomean, get_alert_propert
 logger = logging.getLogger(__name__)
 
 def define_methods():
+    # Theoretical optimal parameters for each method based on previous testing and analysis. These will be adjusted as needed for further testing.
+    # Method   | alpha | fore_window | max_back_window | min_back_window
+    # ---------------------------------------------------------------
+    # CVM      | 0.005 | 6           | 24              | 12
+    # KS       | 0.005 | 3           | 24              | 12
+    # Mozilla  | 5     | 12          | 36              | 12
+    # MWU      | 0.005 | 3           | 48              | 12
+    # Welch    | 0.005 | 12          | 24              | 12
+    # Levene   | 0.005 | 6           | 36              | 12
 
     welch = WelchDetector.WelchDetector(
             min_back_window=12,
             max_back_window=24,
             fore_window=12,
             alert_threshold=2.0,
-            alpha_threshold=0.005,
+            alpha_threshold=0.05,
             mag_check=False,
             above_threshold_is_anomaly=False,
         )
     studenttmag = StudentTMagDetector.StudentTMagDetector(
             min_back_window=12,
-            max_back_window=36,
+            max_back_window=24,
             fore_window=12,
             alert_threshold=2.0,
             alpha_threshold=5,
@@ -60,9 +70,9 @@ def define_methods():
     levene = LeveneDetector.LeveneDetector(
             min_back_window=12,
             max_back_window=36,
-            fore_window=6,
+            fore_window=12,
             alert_threshold=2.0,
-            alpha_threshold=0.005,
+            alpha_threshold=0.05,
             mag_check=False,
             above_threshold_is_anomaly=False,
         )
@@ -103,7 +113,10 @@ def define_methods():
     }
     return methods
 
-def create_alerting(signature, method, analyzed_series):
+def change_detection_by_vote(signature, methods_results, ind, minimum_voters):
+    pass
+
+def create_voted_alerting(signature, method, analyzed_series, minimum_voters=1):
 
     telemetry_sig, _ = PerformanceTelemetrySignature.objects.get_or_create(
         channel=PerformanceTelemetrySignature.NIGHTLY,
@@ -112,8 +125,12 @@ def create_alerting(signature, method, analyzed_series):
         platform=signature.platform,
         application=signature.application
     )
-    for prev, cur in zip(analyzed_series, analyzed_series[1:]):
-        if cur.change_detected:
+    
+    for i in range(1, len(analyzed_series) - 1):
+        prev = analyzed_series[i - 1]
+        cur = analyzed_series[i]
+        next = analyzed_series[i + 1]
+        if change_detection_by_vote(signature, analyzed_series, i, minimum_voters):
             prev_value = cur.historical_stats["avg"]
             new_value = cur.forward_stats["avg"]
 
@@ -122,10 +139,6 @@ def create_alerting(signature, method, analyzed_series):
             )
             noise_profile = "N/A"
             try:
-                # Gather all data up to the current data point that
-                # shows the regression and obtain a noise profile on it.
-                # This helps us to ignore this alert and others in the
-                # calculation that could influence the profile.
                 noise_data = []
                 for point in analyzed_series:
                     if point == cur:
@@ -139,9 +152,6 @@ def create_alerting(signature, method, analyzed_series):
                     )
             except Exception:
                 pass
-                # Fail without breaking the alert computation
-                # newrelic.agent.notice_error()
-                # logger.error("Failed to obtain a noise profile.")
 
             summary, _ = PerformanceAlertSummaryTesting.objects.get_or_create(
                 repository=signature.repository,
@@ -155,18 +165,16 @@ def create_alerting(signature, method, analyzed_series):
                 },
             )
 
-            # django/mysql doesn't understand "inf", so just use some
-            # arbitrarily high value for that case
             confidence = cur.t
             if confidence == float("inf"):
                 confidence = 1000
 
+            # Fixed: detection_method in lookup, sheriffed in defaults
             alert, _ = PerformanceAlertTesting.objects.update_or_create(
                 summary=summary,
                 series_signature=signature,
                 telemetry_series_signature=telemetry_sig,
-                detection_method=method,
-                sheriffed=not signature.monitor,
+                detection_method=method,  # ← MOVED HERE (lookup key)
                 defaults={
                     "noise_profile": noise_profile,
                     "is_regression": alert_properties.is_regression,
@@ -181,9 +189,83 @@ def create_alerting(signature, method, analyzed_series):
                     "prev_p95": 0,
                     "new_p95": 0,
                     "confidence": confidence,
+                    "sheriffed": not signature.monitor,  # ← MOVED HERE (default value)
                 },
             )
 
+def create_alerting(signature, method, analyzed_series):
+
+    telemetry_sig, _ = PerformanceTelemetrySignature.objects.get_or_create(
+        channel=PerformanceTelemetrySignature.NIGHTLY,
+        probe='test_probe',
+        probe_type=PerformanceTelemetrySignature.GLEAN,
+        platform=signature.platform,
+        application=signature.application
+    )
+    
+    for prev, cur in zip(analyzed_series, analyzed_series[1:]):
+        if cur.change_detected:
+            prev_value = cur.historical_stats["avg"]
+            new_value = cur.forward_stats["avg"]
+
+            alert_properties = get_alert_properties(
+                prev_value, new_value, signature.lower_is_better
+            )
+            noise_profile = "N/A"
+            try:
+                noise_data = []
+                for point in analyzed_series:
+                    if point == cur:
+                        break
+                    noise_data.append(geomean(point.values))
+                noise_profile, _ = moz_measure_noise.deviance(noise_data)
+
+                if not isinstance(noise_profile, str):
+                    raise Exception(
+                        f"Expecting a string as a noise profile, got: {type(noise_profile)}"
+                    )
+            except Exception:
+                pass
+
+            summary, _ = PerformanceAlertSummaryTesting.objects.get_or_create(
+                repository=signature.repository,
+                framework=signature.framework,
+                push_id=cur.push_id,
+                prev_push_id=prev.push_id,
+                sheriffed=not signature.monitor,
+                defaults={
+                    "manually_created": False,
+                    "created": datetime.utcfromtimestamp(cur.push_timestamp),
+                },
+            )
+
+            confidence = cur.t
+            if confidence == float("inf"):
+                confidence = 1000
+
+            # Fixed: detection_method in lookup, sheriffed in defaults
+            alert, _ = PerformanceAlertTesting.objects.update_or_create(
+                summary=summary,
+                series_signature=signature,
+                telemetry_series_signature=telemetry_sig,
+                detection_method=method,  # ← MOVED HERE (lookup key)
+                defaults={
+                    "noise_profile": noise_profile,
+                    "is_regression": alert_properties.is_regression,
+                    "amount_pct": alert_properties.pct_change,
+                    "amount_abs": alert_properties.delta,
+                    "prev_value": prev_value,
+                    "new_value": new_value,
+                    "prev_median": 0,
+                    "new_median": 0,
+                    "prev_p90": 0,
+                    "new_p90": 0,
+                    "prev_p95": 0,
+                    "new_p95": 0,
+                    "confidence": confidence,
+                    "sheriffed": not signature.monitor,  # ← MOVED HERE (default value)
+                },
+            )
             # Email notifications getting disabled to not bother Sheriffs while doing testing
             # if signature.alert_notify_emails:
             #     send_alert_emails(signature.alert_notify_emails.split(), alert, summary)
@@ -192,7 +274,8 @@ def create_alerting(signature, method, analyzed_series):
 def detect_methods_changes(signature, data, methods):
     methods_results = dict()
     for method_name, method_impl in methods.items():
-        analyzed_series = method_impl.detect_changes(data, signature)
+        data_copy = copy.deepcopy(data)
+        analyzed_series = method_impl.detect_changes(data_copy, signature)
         methods_results[method_name] = analyzed_series
     return methods_results
 
@@ -245,8 +328,7 @@ def generate_test_alerts_in_series(signature):
         revision_data[d.push_id].replicates.extend(replicates_map.get(d.id, []))
 
 
-    # data = revision_data.values()
-    data = copy.deepcopy(list(revision_data.values()))
+    data = list(revision_data.values())
     methods = define_methods()
 
     methods_results = detect_methods_changes(

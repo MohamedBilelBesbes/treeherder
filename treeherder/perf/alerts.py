@@ -11,7 +11,7 @@ from django.db import transaction
 from django.db.models import Exists, OuterRef, Subquery
 
 from treeherder.perf.email import AlertNotificationWriter
-from treeherder.perf.methods import StudentTMagDetector
+from treeherder.perf.methods import StudentDetector
 from treeherder.perf.models import (
     PerformanceAlert,
     PerformanceAlertSummary,
@@ -213,16 +213,16 @@ def generate_new_alerts_in_series(signature):
 
 def define_methods():
     # Scaffolding to include more methods later on
-    studenttmag = StudentTMagDetector.StudentTMagDetector(
+    student = StudentDetector.StudentDetector(
         min_back_window=12,
         max_back_window=24,
         fore_window=12,
         alert_threshold=2.0,
-        alpha_threshold=7,
+        confidence_threshold=7,
         mag_check=True,
         above_threshold_is_anomaly=True,
     )
-    methods = {"studenttmag": studenttmag}
+    methods = {"student": student}
     return methods
 
 
@@ -350,7 +350,7 @@ def generate_new_test_alerts_in_series(signature):
 
     data = list(revision_data.values())
     methods = define_methods()
-    student_t_mag_method = methods["studenttmag"]
+    student_t_mag_method = methods["student"]
     analyzed_series = student_t_mag_method.detect_changes(data, signature)
 
     with transaction.atomic():

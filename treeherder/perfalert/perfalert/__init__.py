@@ -96,7 +96,7 @@ class RevisionDatum:
         # replicates associated with this revision
         self.replicates = list(replicates or [])
 
-        # t-test score
+        # alpha values (t-test scores and/or p-values)
         self.alpha = {
             "ks": float("inf"),
             "cvm": float("inf"),
@@ -176,7 +176,7 @@ def detect_changes(data, min_back_window=12, max_back_window=24, fore_window=12,
         else:
             last_seen_regression += 1
 
-    # Now that the t-test scores are calculated, go back through the data to
+    # Now that the alpha values (t-test scores and/or p-values) are calculated, go back through the data to
     # find where changes most likely happened.
     for i in range(1, len(data)):
         di = data[i]

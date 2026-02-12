@@ -101,7 +101,7 @@ class RevisionDatum:
             "ks": float("inf"),
             "cvm": float("inf"),
             "mwu": float("inf"),
-            "studenttmag": -float("inf"),
+            "student": -float("inf"),
             "levene": float("inf"),
             "welch": float("inf"),
         }
@@ -111,7 +111,7 @@ class RevisionDatum:
             "ks": False,
             "cvm": False,
             "mwu": False,
-            "studenttmag": False,
+            "student": False,
             "levene": False,
             "welch": False,
         }
@@ -168,10 +168,10 @@ def detect_changes(data, min_back_window=12, max_back_window=24, fore_window=12,
         di.historical_stats = analyze(jw)
         di.forward_stats = analyze(kw)
 
-        di.t = abs(calc_t(jw, kw, linear_weights))
+        di.alpha["student"] = abs(calc_t(jw, kw, linear_weights))
         # add additional historical data points next time if we
         # haven't detected a likely regression
-        if di.t > t_threshold:
+        if di.alpha["student"] > t_threshold:
             last_seen_regression = 0
         else:
             last_seen_regression += 1
@@ -186,17 +186,17 @@ def detect_changes(data, min_back_window=12, max_back_window=24, fore_window=12,
         if di.amount_prev_data < min_back_window or di.amount_next_data < fore_window:
             continue
 
-        if di.t <= t_threshold:
+        if di.alpha["student"] <= t_threshold:
             continue
 
         # Check the adjacent points
         prev = data[i - 1]
-        if prev.t > di.t:
+        if prev.alpha["student"] > di.alpha["student"]:
             continue
         # next may or may not exist if it's the last in the series
         if (i + 1) < len(data):
             next = data[i + 1]
-            if next.t > di.t:
+            if next.alpha["student"] > di.alpha["student"]:
                 continue
 
         # This datapoint has a t value higher than the threshold and higher

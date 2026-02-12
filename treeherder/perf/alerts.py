@@ -20,6 +20,7 @@ from treeherder.perf.models import (
     PerformanceDatum,
     PerformanceDatumReplicate,
     PerformanceSignature,
+    RevisionDatumTest,
 )
 from treeherder.perfalert.perfalert import RevisionDatum, detect_changes
 from treeherder.services import taskcluster
@@ -263,7 +264,7 @@ def create_alerting(signature, method, analyzed_series):
                 },
             )
 
-            confidence = cur.t
+            confidence = cur.confidence[method.name]
             if confidence == float("inf"):
                 confidence = 1000
 
@@ -329,7 +330,7 @@ def generate_new_test_alerts_in_series(signature):
     revision_data = {}
     for d in series:
         if not revision_data.get(d.push_id):
-            revision_data[d.push_id] = RevisionDatum(
+            revision_data[d.push_id] = RevisionDatumTest(
                 int(time.mktime(d.push_timestamp.timetuple())), d.push_id, [], []
             )
         revision_data[d.push_id].values.append(d.value)
@@ -350,8 +351,8 @@ def generate_new_test_alerts_in_series(signature):
 
     data = list(revision_data.values())
     methods = define_methods()
-    student_t_mag_method = methods["student"]
-    analyzed_series = student_t_mag_method.detect_changes(data, signature)
+    student_method = methods["student"]
+    analyzed_series = student_method.detect_changes(data, signature)
 
     with transaction.atomic():
-        create_alerting(signature, student_t_mag_method, analyzed_series)
+        create_alerting(signature, student_method, analyzed_series)

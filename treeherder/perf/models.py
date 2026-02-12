@@ -1,7 +1,8 @@
+import copy
+import functools
 import json
 import logging
 from datetime import datetime
-from functools import reduce
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
@@ -599,7 +600,7 @@ class PerformanceAlertBase(models.Model):
         ),
         null=True,
     )
-    detection_method = models.CharField(max_length=100, null=True)
+    detection_method = models.CharField(max_length=100, null="unknown")
 
     SKEWED = "SKEWED"
     OUTLIERS = "OUTLIERS"
@@ -797,9 +798,63 @@ class PerformanceAlertTesting(PerformanceAlertBase):
     class Meta:
         db_table = "performance_alert_testing"
         unique_together = (
-            ("summary", "series_signature"),
-            ("summary", "telemetry_series_signature"),
+            ("summary", "series_signature", "detection_method"),
+            ("summary", "telemetry_series_signature", "detection_method"),
         )
+
+
+@functools.total_ordering
+class RevisionDatumTest:
+    """
+    This class represents a specific revision and the set of values for it
+    """
+
+    def __init__(self, push_timestamp, push_id, values, replicates=None):
+        # Date code was pushed
+        self.push_timestamp = push_timestamp
+
+        # What revision this data is for (usually, but not guaranteed
+        # to be increasing with push_timestamp)
+        self.push_id = push_id
+
+        # data values associated with this revision
+        self.values = copy.copy(values)
+
+        # replicates associated with this revision
+        self.replicates = list(replicates or [])
+
+        # alpha
+        self.alpha = {
+            "ks": float("inf"),
+            "cvm": float("inf"),
+            "mwu": float("inf"),
+            "studenttmag": -float("inf"),
+            "levene": float("inf"),
+            "welch": float("inf"),
+        }
+
+        # Whether a perf regression or improvement was found
+        self.change_detected = {
+            "ks": False,
+            "cvm": False,
+            "mwu": False,
+            "studenttmag": False,
+            "levene": False,
+            "welch": False,
+        }
+
+    def __eq__(self, o):
+        return self.push_timestamp == o.push_timestamp
+
+    def __lt__(self, o):
+        return self.push_timestamp < o.push_timestamp
+
+    def __repr__(self):
+        values_csv = ", ".join([f"{value:.3f}" for value in self.values])
+        values_str = f"[ {values_csv} ]"
+        changes_str = ", ".join(str(v) for v in self.change_detected.values())
+        alphas_str = ", ".join(f"{alpha:.3f}" for alpha in self.alpha.values())
+        return f"<{self.push_timestamp}: {self.push_id}, {values_str}, {alphas_str}, changes={changes_str}>"
 
 
 class PerformanceTag(models.Model):
@@ -1061,7 +1116,7 @@ def deepgetattr(obj: object, attr_chain: str) -> object | None:
     @return: None if any attribute within chain does not exist.
     """
     try:
-        return reduce(getattr, attr_chain.split("."), obj)
+        return functools.reduce(getattr, attr_chain.split("."), obj)
     except AttributeError:
         logger.debug(
             f"Failed to access deeply nested attribute `{attr_chain}` on object of type {type(obj)}."

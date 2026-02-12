@@ -96,8 +96,8 @@ class RevisionDatum:
         # replicates associated with this revision
         self.replicates = list(replicates or [])
 
-        # alpha values (t-test scores and/or p-values)
-        self.alpha = {
+        # confidence values (t-test scores and/or p-values)
+        self.confidence = {
             "ks": float("inf"),
             "cvm": float("inf"),
             "mwu": float("inf"),
@@ -126,8 +126,8 @@ class RevisionDatum:
         values_csv = ", ".join([f"{value:.3f}" for value in self.values])
         values_str = f"[ {values_csv} ]"
         changes_str = ", ".join(str(v) for v in self.change_detected.values())
-        alphas_str = ", ".join(f"{alpha:.3f}" for alpha in self.alpha.values())
-        return f"<{self.push_timestamp}: {self.push_id}, {values_str}, {alphas_str}, changes={changes_str}>"
+        confidences_str = ", ".join(f"{confidence:.3f}" for confidence in self.confidence.values())
+        return f"<{self.push_timestamp}: {self.push_id}, {values_str}, {confidences_str}, changes={changes_str}>"
 
 
 def detect_changes(data, min_back_window=12, max_back_window=24, fore_window=12, t_threshold=7):
@@ -168,15 +168,15 @@ def detect_changes(data, min_back_window=12, max_back_window=24, fore_window=12,
         di.historical_stats = analyze(jw)
         di.forward_stats = analyze(kw)
 
-        di.alpha["student"] = abs(calc_t(jw, kw, linear_weights))
+        di.confidence["student"] = abs(calc_t(jw, kw, linear_weights))
         # add additional historical data points next time if we
         # haven't detected a likely regression
-        if di.alpha["student"] > t_threshold:
+        if di.confidence["student"] > t_threshold:
             last_seen_regression = 0
         else:
             last_seen_regression += 1
 
-    # Now that the alpha values (t-test scores and/or p-values) are calculated, go back through the data to
+    # Now that the confidence values (t-test scores and/or p-values) are calculated, go back through the data to
     # find where changes most likely happened.
     for i in range(1, len(data)):
         di = data[i]
@@ -186,17 +186,17 @@ def detect_changes(data, min_back_window=12, max_back_window=24, fore_window=12,
         if di.amount_prev_data < min_back_window or di.amount_next_data < fore_window:
             continue
 
-        if di.alpha["student"] <= t_threshold:
+        if di.confidence["student"] <= t_threshold:
             continue
 
         # Check the adjacent points
         prev = data[i - 1]
-        if prev.alpha["student"] > di.alpha["student"]:
+        if prev.confidence["student"] > di.confidence["student"]:
             continue
         # next may or may not exist if it's the last in the series
         if (i + 1) < len(data):
             next = data[i + 1]
-            if next.alpha["student"] > di.alpha["student"]:
+            if next.confidence["student"] > di.confidence["student"]:
                 continue
 
         # This datapoint has a t value higher than the threshold and higher

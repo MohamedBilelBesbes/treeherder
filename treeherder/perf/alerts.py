@@ -227,6 +227,13 @@ def define_methods():
     return methods
 
 
+def detect_methods_changes(signature, data, methods):
+    analyzed_series = data
+    for method_impl in methods.values():
+        analyzed_series = method_impl.detect_changes(analyzed_series, signature)
+    return analyzed_series
+
+
 def create_alerting(signature, method, analyzed_series):
     for prev, cur in zip(analyzed_series, analyzed_series[1:]):
         if cur.change_detected:

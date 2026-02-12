@@ -273,8 +273,8 @@ def create_alerting(signature, method, analyzed_series):
 
 def detect_methods_changes(signature, data, methods):
     methods_results = dict()
+    data_copy = copy.deepcopy(data)
     for method_name, method_impl in methods.items():
-        data_copy = copy.deepcopy(data)
         analyzed_series = method_impl.detect_changes(data_copy, signature)
         methods_results[method_name] = analyzed_series
     return methods_results

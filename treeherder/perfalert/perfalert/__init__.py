@@ -97,10 +97,24 @@ class RevisionDatum:
         self.replicates = list(replicates or [])
 
         # t-test score
-        self.t = 0
+        self.alpha = {
+            "ks": float("inf"),
+            "cvm": float("inf"),
+            "mwu": float("inf"),
+            "studenttmag": -float("inf"),
+            "levene": float("inf"),
+            "welch": float("inf"),
+        }
 
         # Whether a perf regression or improvement was found
-        self.change_detected = False
+        self.change_detected = {
+            "ks": False,
+            "cvm": False,
+            "mwu": False,
+            "studenttmag": False,
+            "levene": False,
+            "welch": False,
+        }
 
     def __eq__(self, o):
         return self.push_timestamp == o.push_timestamp
@@ -111,7 +125,9 @@ class RevisionDatum:
     def __repr__(self):
         values_csv = ", ".join([f"{value:.3f}" for value in self.values])
         values_str = f"[ {values_csv} ]"
-        return f"<{self.push_timestamp}: {self.push_id}, {values_str}, {self.t:.3f}, {self.change_detected}>"
+        changes_str = ", ".join(str(v) for v in self.change_detected.values())
+        alphas_str = ", ".join(f"{alpha:.3f}" for alpha in self.alpha.values())
+        return f"<{self.push_timestamp}: {self.push_id}, {values_str}, {alphas_str}, changes={changes_str}>"
 
 
 def detect_changes(data, min_back_window=12, max_back_window=24, fore_window=12, t_threshold=7):

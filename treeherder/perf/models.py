@@ -852,7 +852,8 @@ class RevisionDatumTest:
         values_csv = ", ".join([f"{value:.3f}" for value in self.values])
         values_str = f"[ {values_csv} ]"
         changes_str = ", ".join(str(v) for v in self.change_detected.values())
-        return f"<{self.push_timestamp}: {self.push_id}, {values_str}, {self.t:.3f}, changes={changes_str}>"
+        alphas_str = ", ".join(f"{alpha:.3f}" for alpha in self.alpha.values())
+        return f"<{self.push_timestamp}: {self.push_id}, {values_str}, {alphas_str}, changes={changes_str}>"
 
 
 class PerformanceTag(models.Model):

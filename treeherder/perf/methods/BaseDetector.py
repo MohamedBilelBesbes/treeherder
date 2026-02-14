@@ -1,8 +1,6 @@
 from abc import ABC, abstractmethod
-from collections import namedtuple
 
-from django.db import transaction
-
+from treeherder.perf.alerts import get_alert_properties
 from treeherder.perf.models import PerformanceSignature
 
 
@@ -55,7 +53,9 @@ class BaseDetector(ABC):
         """
         pass
 
-    def check_threshold(self, confidence, confidence_threshold, above_threshold_is_anomaly):
+    def check_confidence_threshold(
+        self, confidence, confidence_threshold, above_threshold_is_anomaly
+    ):
         """
         Abstract method that must be implemented by subclasses to check threshold.
         """
@@ -72,6 +72,48 @@ class BaseDetector(ABC):
             return entry_1.confidence[self.name] > entry_2.confidence[self.name]
         else:
             return entry_1.confidence[self.name] < entry_2.confidence[self.name]
+
+    def is_representative_point(self, data, i, min_back_window, fore_window):
+        """
+        Determine if the current point should be the representative one when there are
+        consecutive points with identical extreme confidence values.
+
+        For p-value methods (above_threshold_is_anomaly=False):
+        - When multiple consecutive points have p-value = 0 (or same low value),
+          only the LAST one should be selected as the change point.
+
+        For traditional methods (above_threshold_is_anomaly=True):
+        - When multiple consecutive points have the same high value,
+          only the LAST one should be selected as the change point.
+
+        Returns:
+            True if this point should be reported as a change point,
+            False if it should be skipped (because a later point with same value exists)
+        """
+        current_confidence = data[i].confidence[self.name]
+
+        # Look ahead to see if any future consecutive points have the same confidence value
+        j = i + 1
+        while j < len(data):
+            # Skip points that don't have enough data
+            if data[j].amount_prev_data < min_back_window or data[j].amount_next_data < fore_window:
+                j += 1
+                continue
+
+            next_confidence = data[j].confidence[self.name]
+
+            # Check if next point has essentially the same confidence value
+            # (using small epsilon for floating point comparison)
+            if abs(next_confidence - current_confidence) < 1e-10:
+                # There's a consecutive point with same value ahead,
+                # so current point is NOT the representative
+                return False
+            else:
+                # Next point has different value, so we've reached the end of the sequence
+                break
+
+        # No future consecutive points with same value, so this IS the representative
+        return True
 
     def analyze(self, revision_data, weight_fn=None):
         """Returns the average and sample variance (s**2) of a list of floats.
@@ -109,45 +151,20 @@ class BaseDetector(ABC):
 
         return {"avg": weighted_avg, "n": len(all_data), "variance": variance}
 
-    def get_alert_properties(self, prev_value, new_value, lower_is_better):
-        AlertProperties = namedtuple(
-            "AlertProperties", "pct_change delta is_regression prev_value new_value"
-        )
-        if prev_value != 0:
-            pct_change = 100.0 * abs(new_value - prev_value) / float(prev_value)
-        else:
-            pct_change = 0.0
-
-        delta = new_value - prev_value
-
-        is_regression = (delta > 0 and lower_is_better) or (delta < 0 and not lower_is_better)
-
-        return AlertProperties(pct_change, delta, is_regression, prev_value, new_value)
-
-    def check_magnitude_of_change(self, signature, analyzed_series, magnitude_threshold):
-        with transaction.atomic():
-            for cur in range(len(analyzed_series[1:])):
-                curr_series = analyzed_series[cur]
-                if curr_series.change_detected[self.name]:
-                    prev_value = curr_series.historical_stats["avg"]
-                    new_value = curr_series.forward_stats["avg"]
-                    alert_properties = self.get_alert_properties(
-                        prev_value, new_value, signature.lower_is_better
-                    )
-                    # ignore regressions below the configured regression
-                    # threshold
-                    if (
-                        (
-                            signature.alert_change_type is None
-                            or signature.alert_change_type == PerformanceSignature.ALERT_PCT
-                        )
-                        and alert_properties.pct_change < magnitude_threshold
-                    ) or (
-                        signature.alert_change_type == PerformanceSignature.ALERT_ABS
-                        and abs(alert_properties.delta) < magnitude_threshold
-                    ):
-                        analyzed_series[cur].change_detected[self.name] = False
-        return analyzed_series
+    def check_magnitude_of_change(self, signature, prev_value, new_value, magnitude_threshold):
+        alert_properties = get_alert_properties(prev_value, new_value, signature.lower_is_better)
+        if (
+            (
+                signature.alert_change_type is None
+                or signature.alert_change_type == PerformanceSignature.ALERT_PCT
+            )
+            and alert_properties.pct_change < magnitude_threshold
+        ) or (
+            signature.alert_change_type == PerformanceSignature.ALERT_ABS
+            and abs(alert_properties.delta) < magnitude_threshold
+        ):
+            return True
+        return False
 
     def detect_changes(self, data, signature):
         min_back_window = signature.min_back_window
@@ -159,7 +176,7 @@ class BaseDetector(ABC):
         fore_window = signature.fore_window
         if fore_window is None:
             fore_window = self.fore_window
-        magnitude_threshold = signature.magnitude_threshold
+        magnitude_threshold = signature.alert_threshold
         if magnitude_threshold is None:
             magnitude_threshold = self.magnitude_threshold
         confidence_threshold = self.confidence_threshold
@@ -214,7 +231,7 @@ class BaseDetector(ABC):
             if di.amount_prev_data < min_back_window or di.amount_next_data < fore_window:
                 continue
 
-            if self.check_threshold(
+            if self.check_confidence_threshold(
                 di.confidence[self.name], confidence_threshold, above_threshold_is_anomaly
             ):
                 continue
@@ -230,9 +247,20 @@ class BaseDetector(ABC):
                 if self.check_adjacent_points(next, di, above_threshold_is_anomaly):
                     continue
 
-            # This datapoint has a t value higher than the threshold and higher
+            # Check if this is the representative point among consecutive equal values
+            # This prevents reporting multiple consecutive points with identical p-values (e.g., p=0)
+            if not self.is_representative_point(data, i, min_back_window, fore_window):
+                continue
+
+            if mag_check:
+                prev_value = di.historical_stats["avg"]
+                new_value = di.forward_stats["avg"]
+                if self.check_magnitude_of_change(
+                    signature, prev_value, new_value, magnitude_threshold
+                ):
+                    continue
+
+            # This datapoint has a confidence value higher than the threshold and higher
             # than either neighbor.  Mark it as the cause of a regression.
             di.change_detected[self.name] = True
-        if mag_check:
-            data = self.check_magnitude_of_change(signature, data, magnitude_threshold)
         return data

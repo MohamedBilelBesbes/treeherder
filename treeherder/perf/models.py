@@ -769,6 +769,19 @@ class PerformanceTelemetryAlert(PerformanceAlertBase):
         unique_together = ("summary", "series_signature")
 
 
+def default_detection_methods():
+    methods = ("ks", "cvm", "mwu", "student", "levene", "welch")
+
+    return {
+        method: {
+            "push_id": None,
+            "confidence": None,
+            "change_detected": False,
+        }
+        for method in methods
+    }
+
+
 class PerformanceAlertTesting(PerformanceAlertBase):
     summary = models.ForeignKey(
         PerformanceAlertSummaryTesting, on_delete=models.CASCADE, related_name="alerts"
@@ -780,7 +793,7 @@ class PerformanceAlertTesting(PerformanceAlertBase):
         null=True,
     )
     telemetry_series_signature = models.ForeignKey(
-        PerformanceTelemetrySignature, on_delete=models.CASCADE
+        PerformanceTelemetrySignature, on_delete=models.CASCADE, null=True
     )
 
     # Duplicate fields from other types of alerts in this table for testing
@@ -798,7 +811,7 @@ class PerformanceAlertTesting(PerformanceAlertBase):
 
     confidences = models.JSONField(
         help_text="A JSON object that indicates the confidence of the alert for each detection method used",
-        default=lambda: PerformanceAlertTesting.default_detection_methods(),
+        default=default_detection_methods,
     )
 
     class Meta:
@@ -807,19 +820,6 @@ class PerformanceAlertTesting(PerformanceAlertBase):
             ("summary", "series_signature"),
             ("summary", "telemetry_series_signature"),
         )
-
-    @staticmethod
-    def default_detection_methods():
-        methods = ("ks", "cvm", "mwu", "student", "levene", "welch")
-
-        return {
-            method: {
-                "push_id": None,
-                "confidence": None,
-                "change_detected": False,
-            }
-            for method in methods
-        }
 
 
 class PerformanceTag(models.Model):

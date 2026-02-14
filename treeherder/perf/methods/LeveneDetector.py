@@ -10,19 +10,21 @@ class LeveneDetector(BaseDetector):
 
     def __init__(
         self,
+        name="levene",
         min_back_window=12,
         max_back_window=24,
         fore_window=12,
-        alert_threshold=2.0,
+        magnitude_threshold=2.0,
         confidence_threshold=0.05,
         mag_check=False,
         above_threshold_is_anomaly=False,
     ):
         super().__init__(
+            name=name,
             min_back_window=min_back_window,
             max_back_window=max_back_window,
             fore_window=fore_window,
-            alert_threshold=alert_threshold,
+            magnitude_threshold=magnitude_threshold,
             confidence_threshold=confidence_threshold,
             mag_check=mag_check,
             above_threshold_is_anomaly=above_threshold_is_anomaly,

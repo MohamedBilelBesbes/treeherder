@@ -15,7 +15,7 @@ class CramerVonMisesDetector(BaseDetector):
         max_back_window=24,
         fore_window=12,
         magnitude_threshold=2.0,
-        alpha_threshold=0.05,
+        confidence_threshold=0.05,
         mag_check=False,
         above_threshold_is_anomaly=False,
     ):
@@ -25,12 +25,12 @@ class CramerVonMisesDetector(BaseDetector):
             max_back_window=max_back_window,
             fore_window=fore_window,
             magnitude_threshold=magnitude_threshold,
-            alpha_threshold=alpha_threshold,
+            confidence_threshold=confidence_threshold,
             mag_check=mag_check,
             above_threshold_is_anomaly=above_threshold_is_anomaly,
         )
 
-    def calc_alpha(self, jw, kw, alpha_threshold, confidence):
+    def calc_confidence(self, jw, kw, confidence_threshold, confidence):
         """
         Calculate Cramér-von Mises test statistic and p-value.
         """
@@ -46,7 +46,7 @@ class CramerVonMisesDetector(BaseDetector):
         except Exception:
             p = 1.0
 
-        if p < alpha_threshold:
+        if p < confidence_threshold:
             confidence = 0
         else:
             confidence += 1

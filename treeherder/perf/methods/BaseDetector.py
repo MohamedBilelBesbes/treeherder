@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
-from treeherder.perf.alerts import get_alert_properties
 from treeherder.perf.models import PerformanceSignature
+from treeherder.perf.utils import get_alert_properties
 
 
 class BaseDetector(ABC):

@@ -1,6 +1,5 @@
 import logging
 import time
-from collections import namedtuple
 from datetime import datetime
 
 import moz_measure_noise
@@ -11,7 +10,14 @@ from django.db import transaction
 from django.db.models import Exists, OuterRef, Subquery
 
 from treeherder.perf.email import AlertNotificationWriter
-from treeherder.perf.methods import StudentTMagDetector
+from treeherder.perf.methods import (
+    CramerVonMisesDetector,
+    KolmogorovSmirnovDetector,
+    LeveneDetector,
+    MannWhitneyUDetector,
+    StudentDetector,
+    WelchDetector,
+)
 from treeherder.perf.models import (
     PerformanceAlert,
     PerformanceAlertSummary,
@@ -20,7 +26,9 @@ from treeherder.perf.models import (
     PerformanceDatum,
     PerformanceDatumReplicate,
     PerformanceSignature,
+    RevisionDatumTest,
 )
+from treeherder.perf.utils import get_alert_properties
 from treeherder.perfalert.perfalert import RevisionDatum, detect_changes
 from treeherder.services import taskcluster
 
@@ -41,22 +49,6 @@ def geomean(iterable):
     # Returns a geomean of a list of values.
     a = np.array(iterable)
     return a.prod() ** (1.0 / len(a))
-
-
-def get_alert_properties(prev_value, new_value, lower_is_better):
-    AlertProperties = namedtuple(
-        "AlertProperties", "pct_change delta is_regression prev_value new_value"
-    )
-    if prev_value != 0:
-        pct_change = 100.0 * abs(new_value - prev_value) / float(prev_value)
-    else:
-        pct_change = 0.0
-
-    delta = new_value - prev_value
-
-    is_regression = (delta > 0 and lower_is_better) or (delta < 0 and not lower_is_better)
-
-    return AlertProperties(pct_change, delta, is_regression, prev_value, new_value)
 
 
 def generate_new_alerts_in_series(signature):
@@ -213,78 +205,345 @@ def generate_new_alerts_in_series(signature):
 
 def define_methods():
     # Scaffolding to include more methods later on
-    studenttmag = StudentTMagDetector.StudentTMagDetector(
+    student = StudentDetector.StudentDetector(
         min_back_window=12,
         max_back_window=24,
         fore_window=12,
-        alert_threshold=2.0,
-        alpha_threshold=7,
+        magnitude_threshold=2.0,
+        confidence_threshold=7,
         mag_check=True,
         above_threshold_is_anomaly=True,
     )
-    methods = {"studenttmag": studenttmag}
+    cvm = CramerVonMisesDetector.CramerVonMisesDetector(
+        min_back_window=12,
+        max_back_window=24,
+        fore_window=12,
+        magnitude_threshold=2.0,
+        confidence_threshold=7,
+        mag_check=True,
+        above_threshold_is_anomaly=True,
+    )
+    ks = KolmogorovSmirnovDetector.KolmogorovSmirnovDetector(
+        min_back_window=12,
+        max_back_window=24,
+        fore_window=12,
+        magnitude_threshold=2.0,
+        confidence_threshold=7,
+        mag_check=True,
+        above_threshold_is_anomaly=True,
+    )
+    welch = WelchDetector.WelchDetector(
+        min_back_window=12,
+        max_back_window=24,
+        fore_window=12,
+        magnitude_threshold=2.0,
+        confidence_threshold=7,
+        mag_check=True,
+        above_threshold_is_anomaly=True,
+    )
+    levene = LeveneDetector.LeveneDetector(
+        min_back_window=12,
+        max_back_window=24,
+        fore_window=12,
+        magnitude_threshold=2.0,
+        confidence_threshold=7,
+        mag_check=True,
+        above_threshold_is_anomaly=True,
+    )
+    mwu = MannWhitneyUDetector.MannWhitneyUDetector(
+        min_back_window=12,
+        max_back_window=24,
+        fore_window=12,
+        magnitude_threshold=2.0,
+        confidence_threshold=7,
+        mag_check=True,
+        above_threshold_is_anomaly=True,
+    )
+    methods = {
+        "student": student,
+        "cvm": cvm,
+        "ks": ks,
+        "welch": welch,
+        "levene": levene,
+        "mwu": mwu,
+    }
     return methods
 
 
-def create_alerting(signature, method, analyzed_series):
-    for prev, cur in zip(analyzed_series, analyzed_series[1:]):
-        if cur.change_detected:
-            prev_value = cur.historical_stats["avg"]
-            new_value = cur.forward_stats["avg"]
+def detect_methods_changes(signature, data, methods):
+    analyzed_series = data
+    for method_impl in methods.values():
+        analyzed_series = method_impl.detect_changes(analyzed_series, signature)
+    return analyzed_series
 
-            alert_properties = method.get_alert_properties(
-                prev_value, new_value, signature.lower_is_better
-            )
-            noise_profile = "N/A"
-            try:
-                noise_data = []
-                for point in analyzed_series:
-                    if point == cur:
-                        break
-                    noise_data.append(geomean(point.values))
-                noise_profile, _ = moz_measure_noise.deviance(noise_data)
 
-                if not isinstance(noise_profile, str):
-                    raise Exception(
-                        f"Expecting a string as a noise profile, got: {type(noise_profile)}"
+def vote(signature, analyzed_series, strategy="equal", cons_th=3, margin=2):
+    """
+    Apply voting logic to determine which alerts to create based on multiple detection methods.
+    """
+    if strategy == "equal":
+        equal_voting_strategy(signature, analyzed_series, cons_th, margin)
+    elif strategy == "priority":
+        priority_voting_strategy(signature, analyzed_series, cons_th, margin)
+    else:
+        raise ValueError(f"Unknown voting strategy: {strategy}")
+
+
+def get_methods_detecting_at_index(analyzed_series, index, margin=2):
+    """
+    Get detection data for all methods within margin of the given index.
+    """
+    all_methods = define_methods().keys()
+    methods_data = {}
+
+    # Check within the tolerance margin
+    start_idx = max(0, index - margin)
+    end_idx = min(len(analyzed_series), index + margin + 1)
+
+    for i in range(start_idx, end_idx):
+        datum = analyzed_series[i]
+        for method_name in all_methods:
+            if datum.change_detected.get(method_name, False):
+                # Only record first detection for each method
+                if method_name not in methods_data:
+                    confidence_value = datum.confidence.get(method_name, None)
+
+                    # Handle inf values
+                    if confidence_value == float("inf"):
+                        confidence_value = 1000
+
+                    methods_data[method_name] = {
+                        "push_id": datum.push_id,
+                        "confidence": confidence_value,
+                        "change_detected": True,
+                    }
+
+    return methods_data
+
+
+def get_weighted_average_push(analyzed_series, methods, start_idx, end_idx):
+    """
+    Get the index that is the weighted average of where methods detected changes.
+    """
+    # Track which indices each method detected at
+    method_detections = {}  # {method_name: index}
+
+    for i in range(start_idx, end_idx + 1):
+        if i >= len(analyzed_series):
+            break
+        datum = analyzed_series[i]
+        for method in methods:
+            if datum.change_detected.get(method, False):
+                # Only record first detection for each method in range
+                if method not in method_detections:
+                    method_detections[method] = i
+
+    if not method_detections:
+        return None, None
+
+    # Calculate weighted average of detection indices
+    total_index = sum(method_detections.values())
+    num_methods = len(method_detections)
+    weighted_avg_index = total_index // num_methods
+
+    # Clamp to valid range
+    weighted_avg_index = max(start_idx, min(end_idx, weighted_avg_index))
+    weighted_avg_index = min(len(analyzed_series) - 1, weighted_avg_index)
+
+    # Get previous index
+    prev_index = max(0, weighted_avg_index - 1)
+
+    return weighted_avg_index, prev_index
+
+
+def priority_voting_strategy(signature, analyzed_series, cons_th=3, margin=2):
+    """
+    Priority voting strategy where student method has veto power.
+    """
+    if not analyzed_series or len(analyzed_series) < 2:
+        return
+
+    all_methods = define_methods().keys()
+
+    # Track which indices we've already created alerts for (to avoid duplicates
+    # in both Phase 1 and the fallback equal strategy)
+    alerted_indices = set()
+
+    with transaction.atomic():
+        # Phase 1: Student detections (no margin tolerance)
+        for i in range(1, len(analyzed_series)):
+            if any(abs(i - alerted_idx) <= margin for alerted_idx in alerted_indices):
+                continue
+
+            cur = analyzed_series[i]
+
+            if cur.change_detected.get("student", False):
+                prev = analyzed_series[i - 1]
+
+                # Collect ALL methods detecting at this exact index for UI visibility
+                methods_data = {}
+                for method in all_methods:
+                    if cur.change_detected.get(method, False):
+                        confidence_value = cur.confidence.get(method, None)
+                        if confidence_value == float("inf"):
+                            confidence_value = 1000
+
+                        methods_data[method] = {
+                            "push_id": cur.push_id,
+                            "confidence": confidence_value,
+                            "change_detected": True,
+                        }
+
+                create_test_alert(signature, analyzed_series, prev, cur, i, methods_data)
+                alerted_indices.add(i)
+
+        # Phase 2: Fall back to equal strategy for indices not caught by Student
+        # Student won't influence the vote here since change_detected["student"]
+        # is False for all remaining candidates
+        equal_voting_strategy(signature, analyzed_series, cons_th, margin, alerted_indices)
+
+
+def equal_voting_strategy(signature, analyzed_series, cons_th=3, margin=2, alerted_indices=None):
+    """
+    Equal voting strategy where all methods have equal weight.
+    """
+    if not analyzed_series or len(analyzed_series) < 2:
+        return
+
+    # Track which indices we've already created alerts for (to avoid duplicates)
+    alerted_indices = alerted_indices if alerted_indices is not None else set()
+
+    with transaction.atomic():
+        for i in range(1, len(analyzed_series)):
+            # Skip if we've already created an alert near this index
+            if any(abs(i - alerted_idx) <= margin for alerted_idx in alerted_indices):
+                continue
+
+            # Check how many methods detected a change within the tolerance margin
+            methods_detecting_data = get_methods_detecting_at_index(analyzed_series, i, margin)
+
+            # Check if enough methods agree
+            if len(methods_detecting_data) >= cons_th:
+                # Get weighted average index based on where each method detected
+                start_idx = max(0, i - margin)
+                end_idx = min(len(analyzed_series) - 1, i + margin)
+                weighted_index, prev_index = get_weighted_average_push(
+                    analyzed_series, methods_detecting_data, start_idx, end_idx
+                )
+
+                if weighted_index is not None:
+                    cur = analyzed_series[weighted_index]
+                    prev = analyzed_series[prev_index]
+
+                    create_test_alert(
+                        signature,
+                        analyzed_series,
+                        prev,
+                        cur,
+                        weighted_index,
+                        methods_detecting_data,
                     )
-            except Exception:
-                pass
+                    alerted_indices.add(weighted_index)
 
-            summary, _ = PerformanceAlertSummaryTesting.objects.get_or_create(
-                repository=signature.repository,
-                framework=signature.framework,
-                push_id=cur.push_id,
-                prev_push_id=prev.push_id,
-                sheriffed=not signature.monitor,
-                defaults={
-                    "manually_created": False,
-                    "created": datetime.utcfromtimestamp(cur.push_timestamp),
-                },
-            )
 
-            confidence = cur.t
-            if confidence == float("inf"):
-                confidence = 1000
+def create_test_alert(signature, analyzed_series, prev, cur, alert_index, methods_detecting_data):
+    """
+    Create a PerformanceAlertTesting alert for the given change point.
+    """
+    # ... (noise profile calculation stays the same) ...
 
-            alert, _ = PerformanceAlertTesting.objects.update_or_create(
-                summary=summary,
-                series_signature=signature,
-                sheriffed=not signature.monitor,
-                detection_method=method.name,
-                defaults={
-                    "noise_profile": noise_profile,
-                    "is_regression": alert_properties.is_regression,
-                    "amount_pct": alert_properties.pct_change,
-                    "amount_abs": alert_properties.delta,
-                    "prev_value": prev_value,
-                    "new_value": new_value,
-                    "t_value": confidence,
-                },
-            )
-            # Email notifications getting disabled to not bother Sheriffs while doing testing
-            if signature.alert_notify_emails:
-                send_alert_emails(signature.alert_notify_emails.split(), alert, summary)
+    # Build confidences JSON - fill in methods that didn't detect
+    all_methods = define_methods().keys()
+    confidences = {}
+
+    for method in all_methods:
+        if method in methods_detecting_data:
+            confidences[method] = methods_detecting_data[method]
+        else:
+            confidences[method] = {
+                "push_id": None,
+                "confidence": None,
+                "change_detected": False,
+            }
+
+    # Get Student's confidence for t_value field
+    student_confidence = confidences["student"]["confidence"] or None
+
+    if student_confidence == float("inf"):
+        student_confidence = 1000
+
+    prev_value = cur.historical_stats["avg"]
+    new_value = cur.forward_stats["avg"]
+
+    alert_properties = get_alert_properties(prev_value, new_value, signature.lower_is_better)
+
+    # Calculate noise profile
+    noise_profile = "N/A"
+    try:
+        noise_data = []
+        for idx, point in enumerate(analyzed_series):
+            if idx >= alert_index:
+                break
+            noise_data.append(geomean(point.values))
+
+        if noise_data:
+            noise_profile, _ = moz_measure_noise.deviance(noise_data)
+
+            if not isinstance(noise_profile, str):
+                raise Exception(
+                    f"Expecting a string as a noise profile, got: {type(noise_profile)}"
+                )
+    except Exception:
+        # Fail without breaking the alert computation
+        newrelic.agent.notice_error()
+        logger.error("Failed to obtain a noise profile.")
+
+    # Create or get alert summary using the weighted average push's IDs
+    summary, created_new = PerformanceAlertSummaryTesting.objects.get_or_create(
+        repository=signature.repository,
+        framework=signature.framework,
+        push_id=cur.push_id,
+        prev_push_id=prev.push_id,
+        defaults={
+            "manually_created": False,
+            "created": datetime.utcfromtimestamp(cur.push_timestamp),
+            "sheriffed": not signature.monitor,
+        },
+    )
+
+    if created_new:
+        # Set custom timestamp after creation
+        PerformanceAlertSummaryTesting.objects.filter(pk=summary.pk).update(
+            created=datetime.utcfromtimestamp(cur.push_timestamp)
+        )
+        summary.refresh_from_db()
+
+    # Create or update the alert
+    alert, _ = PerformanceAlertTesting.objects.update_or_create(
+        summary=summary,
+        series_signature=signature,
+        defaults={
+            "noise_profile": noise_profile,
+            "is_regression": alert_properties.is_regression,
+            "amount_pct": alert_properties.pct_change,
+            "amount_abs": alert_properties.delta,
+            "prev_value": prev_value,
+            "new_value": new_value,
+            "t_value": student_confidence,  # Student's confidence for backwards compatibility
+            "confidences": confidences,
+            "sheriffed": not signature.monitor,
+            "prev_median": 0,
+            "new_median": 0,
+            "prev_p90": 0,
+            "new_p90": 0,
+            "prev_p95": 0,
+            "new_p95": 0,
+        },
+    )
+
+    # Note: Email notifications are disabled for testing as per original code
+    if signature.alert_notify_emails:
+        send_alert_emails(signature.alert_notify_emails.split(), alert, summary)
 
 
 def generate_new_test_alerts_in_series(signature):
@@ -292,66 +551,57 @@ def generate_new_test_alerts_in_series(signature):
     # (1) the last alert, if there is one
     # (2) the alerts max age
     # (use whichever is newer)
-    max_alert_age = alert_after_ts = datetime.now() - settings.PERFHERDER_ALERTS_MAX_AGE
-    series = PerformanceDatum.objects.filter(signature=signature, push_timestamp__gte=max_alert_age)
-    latest_alert_timestamp = (
-        PerformanceAlertTesting.objects.filter(series_signature=signature)
-        .select_related("summary__push__time")
-        .order_by("-summary__push__time")
-        .values_list("summary__push__time", flat=True)[:1]
-    )
-    if latest_alert_timestamp:
-        latest_ts = latest_alert_timestamp[0]
-        series = series.filter(push_timestamp__gt=latest_ts)
-        if latest_ts > alert_after_ts:
-            alert_after_ts = latest_ts
-
-    datum_with_replicates = (
-        PerformanceDatum.objects.filter(
-            signature=signature,
-            repository=signature.repository,
-            push_timestamp__gte=alert_after_ts,
-        )
-        .annotate(
-            has_replicate=Exists(
-                PerformanceDatumReplicate.objects.filter(performance_datum_id=OuterRef("pk"))
-            )
-        )
-        .filter(has_replicate=True)
-    )
-    replicates = PerformanceDatumReplicate.objects.filter(
-        performance_datum_id__in=Subquery(datum_with_replicates.values("id"))
-    ).values_list("performance_datum_id", "value")
-    replicates_map: dict[int, list[float]] = {}
-    for datum_id, value in replicates:
-        replicates_map.setdefault(datum_id, []).append(value)
-
-    revision_data = {}
-    for d in series:
-        if not revision_data.get(d.push_id):
-            revision_data[d.push_id] = RevisionDatum(
-                int(time.mktime(d.push_timestamp.timetuple())), d.push_id, [], []
-            )
-        revision_data[d.push_id].values.append(d.value)
-        revision_data[d.push_id].replicates.extend(replicates_map.get(d.id, []))
-
-    min_back_window = signature.min_back_window
-    if min_back_window is None:
-        min_back_window = settings.PERFHERDER_ALERTS_MIN_BACK_WINDOW
-    max_back_window = signature.max_back_window
-    if max_back_window is None:
-        max_back_window = settings.PERFHERDER_ALERTS_MAX_BACK_WINDOW
-    fore_window = signature.fore_window
-    if fore_window is None:
-        fore_window = settings.PERFHERDER_ALERTS_FORE_WINDOW
-    alert_threshold = signature.alert_threshold
-    if alert_threshold is None:
-        alert_threshold = settings.PERFHERDER_REGRESSION_THRESHOLD
-
-    data = list(revision_data.values())
-    methods = define_methods()
-    student_t_mag_method = methods["studenttmag"]
-    analyzed_series = student_t_mag_method.detect_changes(data, signature)
-
     with transaction.atomic():
-        create_alerting(signature, student_t_mag_method, analyzed_series)
+        max_alert_age = alert_after_ts = datetime.now() - settings.PERFHERDER_ALERTS_MAX_AGE
+        series = PerformanceDatum.objects.filter(
+            signature=signature, push_timestamp__gte=max_alert_age
+        )
+        latest_alert_timestamp = (
+            PerformanceAlertTesting.objects.filter(series_signature=signature)
+            .select_related("summary__push__time")
+            .order_by("-summary__push__time")
+            .values_list("summary__push__time", flat=True)[:1]
+        )
+        if latest_alert_timestamp:
+            latest_ts = latest_alert_timestamp[0]
+            series = series.filter(push_timestamp__gt=latest_ts)
+            if latest_ts > alert_after_ts:
+                alert_after_ts = latest_ts
+
+        datum_with_replicates = (
+            PerformanceDatum.objects.filter(
+                signature=signature,
+                repository=signature.repository,
+                push_timestamp__gte=alert_after_ts,
+            )
+            .annotate(
+                has_replicate=Exists(
+                    PerformanceDatumReplicate.objects.filter(performance_datum_id=OuterRef("pk"))
+                )
+            )
+            .filter(has_replicate=True)
+        )
+        replicates = PerformanceDatumReplicate.objects.filter(
+            performance_datum_id__in=Subquery(datum_with_replicates.values("id"))
+        ).values_list("performance_datum_id", "value")
+        replicates_map: dict[int, list[float]] = {}
+        for datum_id, value in replicates:
+            replicates_map.setdefault(datum_id, []).append(value)
+
+        revision_data = {}
+        for d in series:
+            if not revision_data.get(d.push_id):
+                revision_data[d.push_id] = RevisionDatumTest(
+                    int(time.mktime(d.push_timestamp.timetuple())), d.push_id, [], []
+                )
+            revision_data[d.push_id].values.append(d.value)
+            revision_data[d.push_id].replicates.extend(replicates_map.get(d.id, []))
+
+        data = revision_data.values()
+        methods = define_methods()
+        analyzed_series = detect_methods_changes(signature, data, methods)
+
+        # Apply voting with configurable parameters
+        # cons_th: consensus threshold (absolute number: 3 means 3 methods must agree out of 6 total)
+        # margin: tolerance for matching detections (±2 indices)
+        vote(signature, analyzed_series, strategy="equal", cons_th=1, margin=2)

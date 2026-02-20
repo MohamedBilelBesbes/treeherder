@@ -1,4 +1,5 @@
 import datetime
+from collections import namedtuple
 
 MON, TUE, WED, THU, FRI, SAT, SUN = range(1, 8)
 TRIAGE_DAYS = 3
@@ -31,3 +32,19 @@ def calculate_time_to(created, due_days=3):
         due_date = due_date + datetime.timedelta(1)
 
     return due_date
+
+
+def get_alert_properties(prev_value, new_value, lower_is_better):
+    AlertProperties = namedtuple(
+        "AlertProperties", "pct_change delta is_regression prev_value new_value"
+    )
+    if prev_value != 0:
+        pct_change = 100.0 * abs(new_value - prev_value) / float(prev_value)
+    else:
+        pct_change = 0.0
+
+    delta = new_value - prev_value
+
+    is_regression = (delta > 0 and lower_is_better) or (delta < 0 and not lower_is_better)
+
+    return AlertProperties(pct_change, delta, is_regression, prev_value, new_value)

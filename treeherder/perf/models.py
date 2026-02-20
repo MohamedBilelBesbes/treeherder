@@ -600,7 +600,7 @@ class PerformanceAlertBase(models.Model):
         ),
         null=True,
     )
-    detection_method = models.CharField(max_length=100, null="unknown")
+    detection_method = models.CharField(max_length=100, null=True)
 
     SKEWED = "SKEWED"
     OUTLIERS = "OUTLIERS"
@@ -798,8 +798,8 @@ class PerformanceAlertTesting(PerformanceAlertBase):
     class Meta:
         db_table = "performance_alert_testing"
         unique_together = (
-            ("summary", "series_signature", "detection_method"),
-            ("summary", "telemetry_series_signature", "detection_method"),
+            ("summary", "series_signature"),
+            ("summary", "telemetry_series_signature"),
         )
 
 

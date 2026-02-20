@@ -353,6 +353,7 @@ def generate_new_test_alerts_in_series(signature):
     # (use whichever is newer)
     max_alert_age = alert_after_ts = datetime.now() - settings.PERFHERDER_ALERTS_MAX_AGE
     series = PerformanceDatum.objects.filter(signature=signature, push_timestamp__gte=max_alert_age)
+    replicates_enabled = True
     latest_alert_timestamp = (
         PerformanceAlertTesting.objects.filter(series_signature=signature)
         .select_related("summary__push__time")
@@ -410,7 +411,7 @@ def generate_new_test_alerts_in_series(signature):
     data = list(revision_data.values())
     methods = build_cpd_methods()
     student_method = methods["student"]
-    analyzed_series = student_method.detect_changes(data, signature)
+    analyzed_series = student_method.detect_changes(data, signature, replicates_enabled)
 
     with transaction.atomic():
         create_alerts(signature, student_method, analyzed_series)

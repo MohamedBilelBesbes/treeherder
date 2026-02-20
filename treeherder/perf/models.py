@@ -782,6 +782,8 @@ class PerformanceAlertTesting(PerformanceAlertBase):
         PerformanceTelemetrySignature, on_delete=models.CASCADE
     )
 
+    replicates_enabled = models.BooleanField(default=False)
+
     # Duplicate fields from other types of alerts in this table for testing
     sustained = models.BooleanField(default=False)
     direction = models.CharField(max_length=100, null=True)
@@ -824,7 +826,7 @@ class RevisionDatumTest:
         self.replicates = list(replicates or [])
 
         # alpha
-        self.alpha = {
+        self.confidence = {
             "ks": float("inf"),
             "cvm": float("inf"),
             "mwu": float("inf"),

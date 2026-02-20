@@ -24,7 +24,9 @@ class StudentDetector(BaseDetector):
             above_threshold_is_anomaly=above_threshold_is_anomaly,
         )
 
-    def calc_confidence(self, w1, w2, confidence_threshold, last_seen_regression):
+    def calc_confidence(
+        self, w1, w2, confidence_threshold, last_seen_regression, replicates_enabled
+    ):
         # replaces calc_t function
         """Perform a Students t-test on the two sets of revision data.
 
@@ -33,8 +35,8 @@ class StudentDetector(BaseDetector):
         if not w1 or not w2:
             t = 0
         else:
-            s1 = self.analyze(w1, self.linear_weights)
-            s2 = self.analyze(w2, self.linear_weights)
+            s1 = self.analyze(w1, replicates_enabled, self.linear_weights)
+            s2 = self.analyze(w2, replicates_enabled, self.linear_weights)
             delta_s = s2["avg"] - s1["avg"]
 
             if delta_s == 0:

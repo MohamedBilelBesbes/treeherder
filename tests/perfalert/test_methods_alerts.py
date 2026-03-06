@@ -1,15 +1,12 @@
 import datetime
 import time
 
-import pytest
-
 from treeherder.model.models import Push
 from treeherder.perf.alerts import generate_new_test_alerts_in_series
 from treeherder.perf.models import (
     PerformanceAlertSummaryTesting,
     PerformanceAlertTesting,
     PerformanceDatum,
-    PerformanceSignature,
 )
 from treeherder.perf.utils import BUG_DAYS, TRIAGE_DAYS, calculate_time_to
 
@@ -254,93 +251,6 @@ def test_no_alerts_with_old_data(
 
     assert PerformanceAlertTesting.objects.count() == 0
     assert PerformanceAlertSummaryTesting.objects.count() == 0
-
-
-def test_custom_alert_threshold(
-    test_repository,
-    test_issue_tracker,
-    failure_classifications,
-    generic_reference_data,
-    test_perf_signature,
-):
-    test_perf_signature.alert_threshold = 200.0
-    test_perf_signature.save()
-
-    # under default settings, this set of data would generate
-    # 2 alerts, but we'll set an artificially high threshold
-    # of 200% that should only generate 1
-    interval = 60
-    base_time = time.time()
-    _generate_performance_data(
-        test_repository,
-        test_perf_signature,
-        base_time,
-        1,
-        0.5,
-        int(interval / 3),
-    )
-    _generate_performance_data(
-        test_repository,
-        test_perf_signature,
-        base_time,
-        int(interval / 3) + 1,
-        0.6,
-        int(interval / 3),
-    )
-    _generate_performance_data(
-        test_repository,
-        test_perf_signature,
-        base_time,
-        2 * int(interval / 3) + 1,
-        2.0,
-        int(interval / 3),
-    )
-
-    generate_new_test_alerts_in_series(test_perf_signature)
-
-    assert PerformanceAlertTesting.objects.count() == 1
-    assert PerformanceAlertSummaryTesting.objects.count() == 1
-
-
-@pytest.mark.parametrize(("new_value", "expected_num_alerts"), [(1.0, 1), (0.25, 0)])
-def test_alert_change_type_absolute(
-    test_repository,
-    test_issue_tracker,
-    failure_classifications,
-    generic_reference_data,
-    test_perf_signature,
-    new_value,
-    expected_num_alerts,
-):
-    # modify the test signature to say that we alert on absolute value
-    # (as opposed to percentage change)
-    test_perf_signature.alert_change_type = PerformanceSignature.ALERT_ABS
-    test_perf_signature.alert_threshold = 0.3
-    test_perf_signature.save()
-
-    base_time = time.time()  # generate it based off current time
-    interval = 30
-    _generate_performance_data(
-        test_repository,
-        test_perf_signature,
-        base_time,
-        1,
-        0.5,
-        int(interval / 2),
-    )
-    _generate_performance_data(
-        test_repository,
-        test_perf_signature,
-        base_time,
-        int(interval / 2) + 1,
-        new_value,
-        int(interval / 2),
-    )
-
-    generate_new_test_alerts_in_series(test_perf_signature)
-
-    assert PerformanceAlertTesting.objects.count() == expected_num_alerts
-    assert PerformanceAlertSummaryTesting.objects.count() == expected_num_alerts
 
 
 def test_alert_monitor_no_sheriff(

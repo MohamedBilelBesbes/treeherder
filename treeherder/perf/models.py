@@ -768,6 +768,18 @@ class PerformanceTelemetryAlert(PerformanceAlertBase):
         unique_together = ("summary", "series_signature")
 
 
+def default_detection_methods():
+    methods = ("ks", "cvm", "mwu", "student", "levene", "welch")
+    return {
+        method: {
+            "push_id": None,
+            "confidence": None,
+            "change_detected": False,
+        }
+        for method in methods
+    }
+
+
 class PerformanceAlertTesting(PerformanceAlertBase):
     summary = models.ForeignKey(
         PerformanceAlertSummaryTesting, on_delete=models.CASCADE, related_name="alerts"
@@ -794,6 +806,11 @@ class PerformanceAlertTesting(PerformanceAlertBase):
 
     prev_p95 = models.FloatField(help_text="Previous P95 value of series before change")
     new_p95 = models.FloatField(help_text="New P95 value of series after change")
+
+    confidences = models.JSONField(
+        help_text="A JSON object that indicates the confidence of the alert for each detection method used",
+        default=default_detection_methods,
+    )
 
     class Meta:
         db_table = "performance_alert_testing"

@@ -292,3 +292,208 @@ def test_alert_monitor_no_sheriff(
     # When monitor is true, then alert should not be sheriffed
     # regardless of should_alert settings
     assert [not alert.sheriffed for alert in PerformanceAlertTesting.objects.all()]
+
+
+def test_high_cons_th_suppresses_alert_on_weak_signal(
+    test_repository,
+    test_issue_tracker,
+    failure_classifications,
+    generic_reference_data,
+    test_perf_signature,
+    mock_deviance,
+):
+    """
+    A weak regression (0.5 → 0.6) should be suppressed when
+    CONS_TH=6 for the 'equal' voting and should yield an alert when
+    the voting strategy is 'priority' because Student Test at least would detect it
+    """
+    base_time = time.time()
+    interval = 30
+
+    _generate_performance_data(
+        test_repository, test_perf_signature, base_time, 1, 0.5, int(interval / 2)
+    )
+    _generate_performance_data(
+        test_repository,
+        test_perf_signature,
+        base_time,
+        int(interval / 2) + 1,
+        0.6,
+        int(interval / 2),
+    )
+
+    generate_new_test_alerts_in_series(test_perf_signature, strategy="equal", cons_th=6, margin=0)
+
+    assert PerformanceAlertTesting.objects.count() == 0
+    assert PerformanceAlertSummaryTesting.objects.count() == 0
+
+    generate_new_test_alerts_in_series(
+        test_perf_signature, strategy="priority", cons_th=6, margin=0
+    )
+
+    assert PerformanceAlertTesting.objects.count() == 1
+    assert PerformanceAlertSummaryTesting.objects.count() == 1
+
+
+def test_low_cons_th_detects_alert_on_weak_signal(
+    test_repository,
+    test_issue_tracker,
+    failure_classifications,
+    generic_reference_data,
+    test_perf_signature,
+    mock_deviance,
+):
+    """
+    The same weak regression (0.5 → 0.6) should produce at least one alert
+    when CONS_TH=1, since only a single method needs to agree.
+    """
+    base_time = time.time()
+    interval = 30
+
+    _generate_performance_data(
+        test_repository, test_perf_signature, base_time, 1, 0.5, int(interval / 2)
+    )
+    _generate_performance_data(
+        test_repository,
+        test_perf_signature,
+        base_time,
+        int(interval / 2) + 1,
+        0.6,
+        int(interval / 2),
+    )
+
+    generate_new_test_alerts_in_series(test_perf_signature, cons_th=1, margin=1)
+
+    assert PerformanceAlertTesting.objects.count() >= 1
+    assert PerformanceAlertSummaryTesting.objects.count() >= 1
+
+
+def test_cons_th_monotonicity_on_strong_signal(
+    test_repository,
+    test_issue_tracker,
+    failure_classifications,
+    generic_reference_data,
+    test_perf_signature,
+    mock_deviance,
+):
+    """
+    For a strong regression (0.5 → 1.0), raising CONS_TH from 1 to 4
+    should never increase the alert count — it must be non-increasing.
+    """
+    base_time = time.time()
+    interval = 30
+    counts = []
+
+    for cons_th in [1, 2, 3, 4]:
+        PerformanceAlertTesting.objects.all().delete()
+        PerformanceAlertSummaryTesting.objects.all().delete()
+        PerformanceDatum.objects.all().delete()
+        Push.objects.filter(repository=test_repository).delete()
+
+        _generate_performance_data(
+            test_repository, test_perf_signature, base_time, 1, 0.5, int(interval / 2)
+        )
+        _generate_performance_data(
+            test_repository,
+            test_perf_signature,
+            base_time,
+            int(interval / 2) + 1,
+            1.0,
+            int(interval / 2),
+        )
+
+        generate_new_test_alerts_in_series(test_perf_signature, cons_th=cons_th, margin=1)
+        counts.append(PerformanceAlertTesting.objects.count())
+
+    for i in range(len(counts) - 1):
+        assert counts[i] >= counts[i + 1], (
+            f"Alert count should be non-increasing as cons_th rises, got counts={counts}"
+        )
+
+
+def test_large_margin_does_not_duplicate_alerts_for_single_regression(
+    test_repository,
+    test_issue_tracker,
+    failure_classifications,
+    generic_reference_data,
+    test_perf_signature,
+    mock_deviance,
+):
+    """
+    A single step-change with MARGIN=5 should still produce exactly one alert —
+    the wide tolerance window should not cause duplicates.
+    """
+    base_time = time.time()
+    interval = 30
+
+    _generate_performance_data(
+        test_repository, test_perf_signature, base_time, 1, 0.5, int(interval / 2)
+    )
+    _generate_performance_data(
+        test_repository,
+        test_perf_signature,
+        base_time,
+        int(interval / 2) + 1,
+        1.0,
+        int(interval / 2),
+    )
+
+    generate_new_test_alerts_in_series(test_perf_signature, cons_th=3, margin=5)
+
+    assert PerformanceAlertTesting.objects.count() == 1
+    assert PerformanceAlertSummaryTesting.objects.count() == 1
+
+
+def test_combined_high_cons_th_low_margin_is_strictest(
+    test_repository,
+    test_issue_tracker,
+    failure_classifications,
+    generic_reference_data,
+    test_perf_signature,
+    mock_deviance,
+):
+    """
+    High CONS_TH (5) + low MARGIN (0) is the strictest combination.
+    A permissive config (CONS_TH=1, MARGIN=5) on the same weak signal
+    should find at least as many alerts as the strict one.
+    """
+    base_time = time.time()
+    interval = 30
+
+    _generate_performance_data(
+        test_repository, test_perf_signature, base_time, 1, 0.5, int(interval / 2)
+    )
+    _generate_performance_data(
+        test_repository,
+        test_perf_signature,
+        base_time,
+        int(interval / 2) + 1,
+        0.55,
+        int(interval / 2),
+    )
+    generate_new_test_alerts_in_series(test_perf_signature, cons_th=5, margin=0)
+    strict_count = PerformanceAlertTesting.objects.count()
+
+    PerformanceAlertTesting.objects.all().delete()
+    PerformanceAlertSummaryTesting.objects.all().delete()
+    PerformanceDatum.objects.all().delete()
+    Push.objects.filter(repository=test_repository).delete()
+
+    _generate_performance_data(
+        test_repository, test_perf_signature, base_time, 1, 0.5, int(interval / 2)
+    )
+    _generate_performance_data(
+        test_repository,
+        test_perf_signature,
+        base_time,
+        int(interval / 2) + 1,
+        0.55,
+        int(interval / 2),
+    )
+    generate_new_test_alerts_in_series(test_perf_signature, cons_th=1, margin=5)
+    permissive_count = PerformanceAlertTesting.objects.count()
+
+    assert permissive_count >= strict_count, (
+        f"Permissive config should find at least as many alerts as strict config. "
+        f"Got strict={strict_count}, permissive={permissive_count}"
+    )

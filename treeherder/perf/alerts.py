@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 STRATEGY = "priority"
 CONS_TH = 3
 MARGIN = 1
+REPLICATES = False
 
 
 def send_alert_emails(emails, alert, alert_summary):
@@ -295,10 +296,11 @@ def build_cpd_methods():
     return methods
 
 
-def detect_methods_changes(signature, data, methods):
+def detect_methods_changes(signature, data, methods, replicates_enabled=False):
     analyzed_series = data
     for method_impl in methods.values():
         analyzed_series = method_impl.detect_changes(analyzed_series, signature)
+        # analyzed_series = method_impl.detect_changes(analyzed_series, signature, replicates_enabled)
     return analyzed_series
 
 
@@ -455,20 +457,15 @@ def equal_voting_strategy(
     )
 
     for i in range(1, len(analyzed_series)):
-        print(analyzed_series[i])
         # Skip if we've already created an alert near this index
         if any(abs(i - alerted_idx) <= margin for alerted_idx in alerted_indices):
             continue
 
         # Check how many methods detected a change within the tolerance margin
         methods_detecting_data = get_methods_detecting_at_index(analyzed_series, i, margin)
-        # print(methods_detecting_data)
 
         # Check if enough methods agree
         if len(methods_detecting_data) >= cons_th:
-            print("##########")
-            print(i)
-            print(methods_detecting_data)
             # Get weighted average index based on where each method detected
             start_idx = max(0, i - margin)
             end_idx = min(len(analyzed_series) - 1, i + margin)
@@ -530,7 +527,6 @@ def create_alert(
 
     prev_value = cur.historical_stats["avg"]
     new_value = cur.forward_stats["avg"]
-    # print(cur.push_id)
 
     alert_properties = get_alert_properties(prev_value, new_value, signature.lower_is_better)
 
@@ -660,7 +656,9 @@ def generate_new_test_alerts_in_series(
 
         data = list(revision_data.values())
         methods = build_cpd_methods()
-        analyzed_series = detect_methods_changes(signature, data, methods)
+        analyzed_series = detect_methods_changes(
+            signature, data, methods, replicates_enabled=REPLICATES
+        )
 
         # Apply voting with configurable parameters
         # cons_th: consensus threshold (absolute number: 3 means 3 methods must agree out of 6 total)

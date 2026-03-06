@@ -296,6 +296,18 @@ def build_cpd_methods():
     return methods
 
 
+def name_voting_strategy(strategy, cons_th, margin, replicates_enabled, existing_name=None):
+    if existing_name is not None:
+        return existing_name
+    suffix = "replicates_enabled" if replicates_enabled else "replicates_not_enabled"
+
+    voting_strategy_naming = (
+        strategy + "_voting_" + str(cons_th) + "_cons_th_" + str(margin) + "_margin_" + suffix
+    )
+
+    return voting_strategy_naming
+
+
 def detect_methods_changes(signature, data, methods, replicates_enabled=False):
     analyzed_series = data
     for method_impl in methods.values():
@@ -304,14 +316,16 @@ def detect_methods_changes(signature, data, methods, replicates_enabled=False):
     return analyzed_series
 
 
-def vote(signature, analyzed_series, strategy="equal", cons_th=3, margin=2):
+def vote(
+    signature, analyzed_series, strategy="equal", cons_th=3, margin=2, replicates_enabled=False
+):
     """
     Apply voting logic to determine which alerts to create based on multiple detection methods.
     """
     if strategy == "equal":
-        equal_voting_strategy(signature, analyzed_series, cons_th, margin)
+        equal_voting_strategy(signature, analyzed_series, cons_th, margin, replicates_enabled)
     elif strategy == "priority":
-        priority_voting_strategy(signature, analyzed_series, cons_th, margin)
+        priority_voting_strategy(signature, analyzed_series, cons_th, margin, replicates_enabled)
     else:
         raise ValueError(f"Unknown voting strategy: {strategy}")
 
@@ -382,7 +396,9 @@ def get_weighted_average_push(analyzed_series, methods, start_idx, end_idx):
     return weighted_avg_index, prev_index
 
 
-def priority_voting_strategy(signature, analyzed_series, cons_th=3, margin=1):
+def priority_voting_strategy(
+    signature, analyzed_series, cons_th=3, margin=1, replicates_enabled=False
+):
     """
     Priority voting strategy where student method has voting priority.
     """
@@ -390,9 +406,7 @@ def priority_voting_strategy(signature, analyzed_series, cons_th=3, margin=1):
         return
 
     all_methods = build_cpd_methods().keys()
-    detection_method_naming = (
-        "priority_voting_" + str(cons_th) + "_cons_th_" + str(margin) + "_margin"
-    )
+    detection_method_naming = name_voting_strategy("priority", cons_th, margin, replicates_enabled)
 
     # Track which indices we've already created alerts for (to avoid duplicates
     # in both Phase 1 and the fallback equal strategy)
@@ -431,7 +445,13 @@ def priority_voting_strategy(signature, analyzed_series, cons_th=3, margin=1):
     # Student won't influence the vote here since change_detected["student"]
     # is False for all remaining candidates
     equal_voting_strategy(
-        signature, analyzed_series, cons_th, margin, alerted_indices, detection_method_naming
+        signature,
+        analyzed_series,
+        cons_th,
+        margin,
+        alerted_indices,
+        detection_method_naming,
+        replicates_enabled,
     )
 
 
@@ -442,6 +462,7 @@ def equal_voting_strategy(
     margin=2,
     alerted_indices=None,
     detection_method_naming=None,
+    replicates_enabled=False,
 ):
     """
     Equal voting strategy where all methods have equal weight.
@@ -450,12 +471,10 @@ def equal_voting_strategy(
         return
 
     # Track which indices we've already created alerts for (to avoid duplicates)
-    alerted_indices = alerted_indices if alerted_indices is not None else set()
-    equal_voting_naming = "equal_voting_" + str(cons_th) + "_cons_th_" + str(margin) + "_margin"
-    detection_method_naming = (
-        detection_method_naming if detection_method_naming is not None else equal_voting_naming
+    detection_method_naming = name_voting_strategy(
+        "equal", cons_th, margin, replicates_enabled, detection_method_naming
     )
-
+    alerted_indices = alerted_indices if alerted_indices is not None else set()
     for i in range(1, len(analyzed_series)):
         # Skip if we've already created an alert near this index
         if any(abs(i - alerted_idx) <= margin for alerted_idx in alerted_indices):
@@ -663,4 +682,11 @@ def generate_new_test_alerts_in_series(
         # Apply voting with configurable parameters
         # cons_th: consensus threshold (absolute number: 3 means 3 methods must agree out of 6 total)
         # margin: tolerance for matching detections (±2 indices)
-        vote(signature, analyzed_series, strategy=strategy, cons_th=cons_th, margin=margin)
+        vote(
+            signature,
+            analyzed_series,
+            strategy=strategy,
+            cons_th=cons_th,
+            margin=margin,
+            replicates_enabled=REPLICATES,
+        )

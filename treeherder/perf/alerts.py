@@ -323,9 +323,21 @@ def vote(
     Apply voting logic to determine which alerts to create based on multiple detection methods.
     """
     if strategy == "equal":
-        equal_voting_strategy(signature, analyzed_series, cons_th, margin, replicates_enabled)
+        equal_voting_strategy(
+            signature=signature,
+            analyzed_series=analyzed_series,
+            cons_th=cons_th,
+            margin=margin,
+            replicates_enabled=replicates_enabled
+            )
     elif strategy == "priority":
-        priority_voting_strategy(signature, analyzed_series, cons_th, margin, replicates_enabled)
+        priority_voting_strategy(
+            signature=signature,
+            analyzed_series=analyzed_series,
+            cons_th=cons_th,
+            margin=margin,
+            replicates_enabled=replicates_enabled
+            )
     else:
         raise ValueError(f"Unknown voting strategy: {strategy}")
 
@@ -435,23 +447,21 @@ def priority_voting_strategy(
                         "confidence": confidence_value,
                         "change_detected": True,
                     }
-
             create_alert(
                 signature, analyzed_series, prev, cur, i, methods_data, detection_method_naming
             )
-            alerted_indices.add(i)
 
     # Phase 2: Fall back to equal strategy for indices not caught by Student
     # Student won't influence the vote here since change_detected["student"]
     # is False for all remaining candidates
     equal_voting_strategy(
-        signature,
-        analyzed_series,
-        cons_th,
-        margin,
-        alerted_indices,
-        detection_method_naming,
-        replicates_enabled,
+        signature=signature,
+        analyzed_series=analyzed_series,
+        cons_th=cons_th,
+        margin=margin,
+        alerted_indices=alerted_indices,
+        detection_method_naming=detection_method_naming,
+        replicates_enabled=replicates_enabled,
     )
 
 
@@ -533,8 +543,8 @@ def create_alert(
             confidences[method] = methods_detecting_data[method]
         else:
             confidences[method] = {
-                "push_id": None,
-                "confidence": None,
+                "push_id": cur.push_id,
+                "confidence": cur.confidence.get(method, None),
                 "change_detected": False,
             }
 

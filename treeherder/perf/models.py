@@ -768,6 +768,20 @@ class PerformanceTelemetryAlert(PerformanceAlertBase):
         unique_together = ("summary", "series_signature")
 
 
+def default_detection_methods():
+    methods = ("ks", "cvm", "mwu", "student", "levene", "welch")
+    confidences = {
+        method: {
+            "push_id": None,
+            "confidence": None,
+            "change_detected": False,
+            "detection_push_confidence": None,
+        }
+        for method in methods
+    }
+    return confidences
+
+
 class PerformanceAlertTesting(PerformanceAlertBase):
     summary = models.ForeignKey(
         PerformanceAlertSummaryTesting, on_delete=models.CASCADE, related_name="alerts"
@@ -794,6 +808,13 @@ class PerformanceAlertTesting(PerformanceAlertBase):
 
     prev_p95 = models.FloatField(help_text="Previous P95 value of series before change")
     new_p95 = models.FloatField(help_text="New P95 value of series after change")
+
+    confidences = models.JSONField(
+        help_text="A JSON object that indicates the confidence of the alert for each detection method used. "
+        "It has methods detecting changes on the culprit revision or in one of the revisions aorund it, the push_id "
+        "field indicates the revision where the change was detected for the given method.",
+        default=default_detection_methods,
+    )
 
     class Meta:
         db_table = "performance_alert_testing"
@@ -852,9 +873,8 @@ class RevisionDatumTest:
     def __repr__(self):
         values_csv = ", ".join([f"{value:.3f}" for value in self.values])
         values_str = f"[ {values_csv} ]"
-        changes_str = ", ".join(str(v) for v in self.change_detected.values())
         confidences_str = ", ".join(f"{confidence:.3f}" for confidence in self.confidence.values())
-        return f"<{self.push_timestamp}: {self.push_id}, {values_str}, {confidences_str}, changes={changes_str}>"
+        return f"<{self.push_timestamp}: {self.push_id}, {values_str}, {confidences_str}>"
 
 
 class PerformanceTag(models.Model):
